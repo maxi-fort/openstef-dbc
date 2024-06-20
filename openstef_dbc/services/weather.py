@@ -218,6 +218,7 @@ class Weather:
         resolution: str = "15min",
         country: str = "NL",
         k: int = 1,
+        forecasting_horizon: List[float] = None,
     ) -> pd.DataFrame:
         """Get weather data from database.
 
@@ -239,6 +240,7 @@ class Weather:
             resolution (str): Time resolution of the returned data, default: "15T"
             country (str): Country code (2-letter: ISO 3166-1). e.g. NL
             k (int): number of weather locations desired
+            forecasting_horizon: (list) the t_ahead values for which the data should be extracted from db
         Returns:
             pd.DataFrame: The most recent weather prediction
 
@@ -310,15 +312,22 @@ class Weather:
         weather_models_str = '" or r.source == "'.join(source)
         weather_location_name_str = '" or r.input_city == "'.join(location_name)
 
+        weather_tAhead_str = ""
+        if forecasting_horizon is not None:
+            weather_tAhead_str = 'and (r.tAhead == "'+'" or r.tAhead == "'.join(map(str,forecasting_horizon))+'")'
+
         # Create the query
         query = f"""
             from(bucket: "forecast_latest/autogen") 
                 |> range(start: {bind_params["_start"].strftime('%Y-%m-%dT%H:%M:%SZ')}, stop: {bind_params["_stop"].strftime('%Y-%m-%dT%H:%M:%SZ')}) 
-                |> filter(fn: (r) => r._measurement == "weather" and (r._field == "{weather_params_str}") and (r.source == "{weather_models_str}") and (r.input_city == "{weather_location_name_str}"))
+                |> filter(fn: (r) => r._measurement == "weather" and (r._field == "{weather_params_str}") and (r.source == "{weather_models_str}") and (r.input_city == "{weather_location_name_str}"){weather_tAhead_str})
         """
 
         # Execute Query
         result = _DataInterface.get_instance().exec_influx_query(query)
+
+        if "tAhead" in result.columns:
+            result['tAhead'] = pd.to_numeric(result['tAhead'])
 
         # For multiple Fields a list is returned.
         if isinstance(result, list):
@@ -326,7 +335,7 @@ class Weather:
 
         # Check if response is empty
         if not result.empty:
-            result = parse_influx_result(result, ["source", "input_city"])
+            result = parse_influx_result(result, ["source", "input_city", "tAhead"])
         else:
             self.logger.warning("No weatherdata found. Returning empty dataframe")
             return pd.DataFrame(
@@ -342,13 +351,22 @@ class Weather:
             self.logger.info("Combining sources into single dataframe")
             result = self._combine_weather_sources(result)
 
-        # Interpolate if nescesarry by input_city and source
+        # Changing interpolation strategy if indexes ares duplicated due to tAhead
+        interpolation_grouping = ['input_city']
+        index_duplicates = result.index.duplicated().any()
+        if index_duplicates:
+            # Compute creation_datetime
+            result['creation_datetime'] = result.index - pd.to_timedelta(result['tAhead'], unit="hour")
+            interpolation_grouping +=['creation_datetime']
+
+        # Interpolate if nescesarry by input_city and additionnal groups
+
         result = (
-            result.groupby(["input_city"])
+            result.groupby(interpolation_grouping)
             .resample(resolution)
             .interpolate(limit=11)
-            .drop(columns=["input_city"])
-            .reset_index(["input_city"])
+            .drop(columns=interpolation_grouping)
+            .reset_index(interpolation_grouping)
         )
 
         # result = result.resample(resolution).interpolate(limit=11)
@@ -357,8 +375,9 @@ class Weather:
         if "radiation" in result.columns:
             shift_delta = -timedelta(minutes=30)
             if shift_delta % pd.Timedelta(resolution) == timedelta(0):
-                result["radiation"] = result.groupby(["input_city"])["radiation"].shift(
-                    1, shift_delta
+                result["radiation"] = (
+                    result.groupby(interpolation_grouping)["radiation"]
+                    .shift(1, shift_delta)
                 )
 
         # Drop extra rows not neccesary
@@ -366,6 +385,9 @@ class Weather:
 
         if k == 1:
             result = result.drop(columns="input_city")
+
+        if forecasting_horizon is None:
+            result = result.drop(columns=["tAhead"])
 
         return result
 

@@ -75,10 +75,12 @@ class ModelInput:
 
         # Get predictors
         predictors = Predictor().get_predictors(
+            pid=pid,
             datetime_start=datetime_start,
             datetime_end=datetime_end,
             forecast_resolution=forecast_resolution,
             location=location,
+            country=country,
         )
 
         # Create model input with datetime index
@@ -92,8 +94,9 @@ class ModelInput:
         else:
             self.logger.warning("No load data returned, fill with NaN.")
             model_input["load"] = np.nan
+        
         # Add predictors
-        model_input = pd.concat([model_input, predictors], axis=1)
+        model_input = model_input.merge(predictors, right_index=True, left_index=True)
 
         return model_input
 
