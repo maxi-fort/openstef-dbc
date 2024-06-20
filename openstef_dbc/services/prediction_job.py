@@ -368,7 +368,8 @@ class PredictionJobRetriever:
                 p.resolution_minutes,
                 p.train_components,
                 min(s.lat) as lat,
-                min(s.lon) as lon
+                min(s.lon) as lon,
+                p.source
             FROM predictions as p
             LEFT JOIN
                 predictions_systems as ps ON p.id = ps.prediction_id
