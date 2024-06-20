@@ -8,6 +8,7 @@ from typing import List, Optional, Tuple, Union
 import pandas as pd
 from openstef_dbc.data_interface import _DataInterface
 from openstef_dbc.services.weather import Weather
+from openstef_dbc.services.prediction_job import PredictionJobRetriever
 from openstef_dbc.utils import (
     genereate_datetime_index,
     process_datetime_range,
@@ -24,6 +25,7 @@ class PredictorGroups(Enum):
 class Predictor:
     def get_predictors(
         self,
+        pid: int,
         datetime_start: datetime.datetime,
         datetime_end: datetime.datetime,
         forecast_resolution: Optional[str] = None,
@@ -37,6 +39,7 @@ class Predictor:
         selected. If the WEATHER_DATA group is included a location is required.
 
         Args:
+            pid (int): id of the prediction job
             datetime_start (datetime): Date time end.
             datetime_end (datetime): Date time start.
             location (Union[str, Tuple[float, float]], optional): Location (for weather data).
@@ -69,6 +72,17 @@ class Predictor:
             )
         predictors = []
 
+
+        # Get prediction job
+        pj = PredictionJobRetriever().get_prediction_job(
+            pid = pid
+        )
+
+        if pj.source is not None:
+            source=pj.source
+        else:
+            source="optimum"
+
         if PredictorGroups.WEATHER_DATA in predictor_groups:
             weather_data_predictors = self.get_weather_data(
                 datetime_start,
@@ -76,6 +90,8 @@ class Predictor:
                 location=location,
                 country=country,
                 forecast_resolution=forecast_resolution,
+                forecasting_horizon=pj.train_horizons_minutes,
+                source=source,
             )
             predictors.append(weather_data_predictors)
 
@@ -91,7 +107,12 @@ class Predictor:
             )
             predictors.append(load_profiles_predictors)
 
-        return pd.concat(predictors, axis=1)
+        # Predictors fusion (using merge instead of concat since weather_data_predictors can contains duplicated index)
+        predictors_df = predictors[0]
+        for df in predictors[1:]:
+            predictors_df = pd.merge(predictors_df, df, left_index=True, right_index=True, how='outer')
+
+        return predictors_df
 
     def get_market_data(
         self,
@@ -243,8 +264,14 @@ class Predictor:
         location: Union[Tuple[float, float], str],
         forecast_resolution: str = None,
         country: str = "NL",
+        source: str = "optimum",
+        forecasting_horizon: List[float] = None,
     ) -> pd.DataFrame:
         # Get weather data
+
+        if source is None:
+            source = "optimum"
+        
         weather_params = [
             "clouds",
             "radiation",
@@ -266,8 +293,9 @@ class Predictor:
             weather_params,
             datetime_start,
             datetime_end,
-            source="optimum",
+            source=source,
             country=country,
+            forecasting_horizon=forecasting_horizon,
         )
 
         # Post process weather data
@@ -283,10 +311,5 @@ class Predictor:
             del weather_data["input_city_1"]
         elif "input_city" in list(weather_data):
             del weather_data["input_city"]
-
-        if forecast_resolution and weather_data.empty is False:
-            weather_data = weather_data.resample(forecast_resolution).interpolate(
-                limit=11
-            )  # 11 as GFS data has data every 3 hours
 
         return weather_data
