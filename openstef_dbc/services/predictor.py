@@ -72,17 +72,12 @@ class Predictor:
             )
         predictors = []
 
-
         # Get prediction job
-        pj = PredictionJobRetriever().get_prediction_job(
-            pid = pid
-        )
+        pj = PredictionJobRetriever().get_prediction_job(pid)
 
-        if pj.source is not None:
-            source=pj.source
-        else:
-            source="optimum"
-
+        source = self.get_source(pid)
+        if source is None:
+            source = "optimum"
         if PredictorGroups.WEATHER_DATA in predictor_groups:
             weather_data_predictors = self.get_weather_data(
                 datetime_start,
@@ -113,6 +108,17 @@ class Predictor:
             predictors_df = pd.merge(predictors_df, df, left_index=True, right_index=True, how='outer')
 
         return predictors_df
+
+    def get_source(self, pid: int):
+        query = 'SELECT source FROM predictions WHERE id=%(pid)s'
+        bind_params = {"pid" : pid}
+        source = _DataInterface.get_instance().exec_sql_query(
+            query,
+            bind_params
+            ).iloc[0, 0]
+        if source:
+            return source
+        return None
 
     def get_market_data(
         self,
