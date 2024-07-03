@@ -8,6 +8,8 @@ from pydantic.v1 import ValidationError
 import pandas as pd
 
 from openstef.data_classes.prediction_job import PredictionJobDataClass
+from openstef.data_classes.model_specifications import ModelSpecificationDataClass
+from openstef.data_classes.data_prep import DataPrepDataClass
 
 from openstef_dbc.data_interface import _DataInterface
 from openstef_dbc.log import logging
@@ -50,6 +52,9 @@ class PredictionJobRetriever:
 
         # Add quantiles
         prediction_job_dict = self._add_quantiles_to_prediction_job(prediction_job_dict)
+        
+        # Add model specs
+        prediction_job_dict = self._add_modelspecs_to_prediction_job(prediction_job_dict)
 
         prediction_job = self._create_prediction_job_object(prediction_job_dict)
         return prediction_job
@@ -82,6 +87,7 @@ class PredictionJobRetriever:
         )
         prediction_jobs = self._get_prediction_jobs_query_results(query)
         prediction_jobs = self._add_quantiles_to_prediction_jobs(prediction_jobs)
+        prediction_jobs = self._add_modelspecs_to_prediction_jobs(prediction_jobs)
         return prediction_jobs
 
     def get_prediction_jobs_wind(self):
@@ -196,6 +202,11 @@ class PredictionJobRetriever:
         self, prediction_job: PredictionJobDataClass
     ) -> PredictionJobDataClass:
         return self._add_quantiles_to_prediction_jobs([prediction_job])[0]
+    
+    def _add_modelspecs_to_prediction_job(
+        self, prediction_job: PredictionJobDataClass
+    ) -> PredictionJobDataClass:
+        return self._add_modelspecs_to_prediction_jobs([prediction_job])[0]
 
     def get_pids_for_api_key(self, api_key: str) -> list[int]:
         """Get all pids that belong to a given API key.
@@ -319,6 +330,57 @@ class PredictionJobRetriever:
         return prediction_jobs
 
     @classmethod
+    def _add_modelspecs_to_prediction_jobs(
+        cls, prediction_jobs: List[PredictionJobDataClass]
+    ) -> List[PredictionJobDataClass]:
+        prediction_job_ids = [pj["id"] for pj in prediction_jobs]
+        prediction_jobs_ids_str = ", ".join([f"'{p}'" for p in prediction_job_ids])
+
+        query = f"""
+            SELECT p.id AS prediction_id, ms.*
+            FROM model_specs AS ms
+            JOIN (
+                predictions as p
+            )
+            WHERE
+                p.id = ms.pid AND
+                p.id IN  ({prediction_jobs_ids_str})
+            ORDER BY prediction_id
+            ;
+        """
+
+        result = _DataInterface.get_instance().exec_sql_query(query)
+
+        # get quantiles for every prediction job
+        model_specs = {}
+        for _, row in result.iterrows():
+            pid = row['prediction_id']
+            hyper_params = dict() if row['hyper_params'] is None else json.loads(row['hyper_params'])
+            feature_names = [fn.strip() for fn in row['feature_names'].split(',')] if not row['feature_names'] is None else []
+            feature_modules = [fm.strip() for fm in row['feature_modules'].split(',')] if not row['feature_modules'] is None else []
+            model_specs[pid] = ModelSpecificationDataClass(
+                id=pid,
+                hyper_params=hyper_params,
+                feature_names=feature_names,
+                feature_modules=feature_modules
+            )
+        # add model_specs to prediction job
+        for prediction_job in prediction_jobs:
+            pid = prediction_job["id"]
+            # add modelspecs if any
+            if pid in model_specs:
+                prediction_job["default_modelspecs"] = model_specs[pid]
+                data_prep = DataPrepDataClass(
+                    klass="custom_prep.identity_prep.identityPrep",
+                    arguments={}
+                )
+                prediction_job["data_prep_class"] = data_prep
+                continue
+            # add empty list if none (this should not actually happen)
+            prediction_job["default_modelspecs"] = []
+        return prediction_jobs    
+            
+    @classmethod
     def build_get_prediction_jobs_query(
         cls,
         pid: Union[int, str, List[int], List[str], None] = None,
@@ -368,7 +430,8 @@ class PredictionJobRetriever:
                 p.resolution_minutes,
                 p.train_components,
                 min(s.lat) as lat,
-                min(s.lon) as lon
+                min(s.lon) as lon,
+                p.source
             FROM predictions as p
             LEFT JOIN
                 predictions_systems as ps ON p.id = ps.prediction_id

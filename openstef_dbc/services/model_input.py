@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 from datetime import datetime, timedelta
-from typing import Tuple, Union
+from typing import List, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -29,6 +29,8 @@ class ModelInput:
         datetime_start: str = None,
         datetime_end: str = None,
         forecast_resolution: str = "15min",
+        number_locations: int = 1,
+        forecasting_horizon: List[float] = None,
     ) -> pd.DataFrame:
         """Get model input.
 
@@ -75,16 +77,18 @@ class ModelInput:
 
         # Get predictors
         predictors = Predictor().get_predictors(
+            pid=pid,
             datetime_start=datetime_start,
             datetime_end=datetime_end,
             forecast_resolution=forecast_resolution,
             location=location,
+            country=country,
+            number_locations=number_locations,
+            forecasting_horizon=forecasting_horizon,
         )
-
         # Create model input with datetime index
         model_input = pd.DataFrame(index=datetime_index)
         model_input.index.name = "index"
-
         # Add load if available, else add nan column
         if not load.empty:
             load = load.resample(forecast_resolution).mean().interpolate(limit=3)

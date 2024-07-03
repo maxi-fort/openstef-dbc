@@ -8,6 +8,7 @@ from typing import List, Optional, Tuple, Union
 import pandas as pd
 from openstef_dbc.data_interface import _DataInterface
 from openstef_dbc.services.weather import Weather
+from openstef_dbc.services.prediction_job import PredictionJobRetriever
 from openstef_dbc.utils import (
     genereate_datetime_index,
     process_datetime_range,
@@ -24,12 +25,15 @@ class PredictorGroups(Enum):
 class Predictor:
     def get_predictors(
         self,
+        pid: int,
         datetime_start: datetime.datetime,
         datetime_end: datetime.datetime,
         forecast_resolution: Optional[str] = None,
         location: Union[str, Tuple[float, float]] = None,
         predictor_groups: Union[List[PredictorGroups], List[str], None] = None,
         country: str = "NL",
+        number_locations: int = 1,
+        forecasting_horizon: List[float] = None,
     ) -> pd.DataFrame:
         """Get predictors.
 
@@ -37,6 +41,7 @@ class Predictor:
         selected. If the WEATHER_DATA group is included a location is required.
 
         Args:
+            pid (int): id of the prediction job
             datetime_start (datetime): Date time end.
             datetime_end (datetime): Date time start.
             location (Union[str, Tuple[float, float]], optional): Location (for weather data).
@@ -69,19 +74,31 @@ class Predictor:
             )
         predictors = []
 
+        # Get prediction job
+        pj = PredictionJobRetriever().get_prediction_job(pid)
+        source = self.get_source(pid)
+        if source is None:
+            source = "optimum"
         if PredictorGroups.WEATHER_DATA in predictor_groups:
             weather_data_predictors = self.get_weather_data(
-                datetime_start,
-                datetime_end,
+                pid=pj.id,
+                datetime_start=datetime_start,
+                datetime_end=datetime_end,
+                weatherparams=pj.default_modelspecs.feature_names,
                 location=location,
+                resolution=forecast_resolution,
                 country=country,
-                forecast_resolution=forecast_resolution,
+                source=source,
+                number_locations=number_locations,
+                forecasting_horizon=forecasting_horizon,
             )
             predictors.append(weather_data_predictors)
 
         if PredictorGroups.MARKET_DATA in predictor_groups:
             market_data_predictors = self.get_market_data(
-                datetime_start, datetime_end, forecast_resolution=forecast_resolution
+                datetime_start,
+                datetime_end,
+                forecast_resolution
             )
             predictors.append(market_data_predictors)
 
@@ -90,8 +107,23 @@ class Predictor:
                 datetime_start, datetime_end, forecast_resolution=forecast_resolution
             )
             predictors.append(load_profiles_predictors)
+        # Predictors fusion (using merge instead of concat since weather_data_predictors can contains duplicated index)
+        predictors_df = predictors[0]
+        for df in predictors[1:]:
+            predictors_df = pd.merge(predictors_df, df, left_index=True, right_index=True, how='outer')
 
-        return pd.concat(predictors, axis=1)
+        return predictors_df
+
+    def get_source(self, pid: int):
+        query = 'SELECT source FROM predictions WHERE id=%(pid)s'
+        bind_params = {"pid" : pid}
+        source = _DataInterface.get_instance().exec_sql_query(
+            query,
+            bind_params
+            ).iloc[0, 0]
+        if source:
+            return source
+        return None
 
     def get_market_data(
         self,
@@ -238,38 +270,50 @@ class Predictor:
 
     def get_weather_data(
         self,
+        pid: int,
         datetime_start: datetime.datetime,
         datetime_end: datetime.datetime,
+        weatherparams: List[str],
         location: Union[Tuple[float, float], str],
-        forecast_resolution: str = None,
+        resolution: str = "15min",
         country: str = "NL",
+        source: str = "optimum",
+        number_locations: int = 1,
+        forecasting_horizon: List[float] = None,
     ) -> pd.DataFrame:
         # Get weather data
-        weather_params = [
-            "clouds",
-            "radiation",
-            "temp",
-            "winddeg",
-            "windspeed",
-            "windspeed_100m",
-            "pressure",
-            "humidity",
-            "rain",
-            "mxlD",
-            "snowDepth",
-            "clearSky_ulf",
-            "clearSky_dlf",
-            "ssrunoff",
-        ]
+        source = self.get_source(pid)
+        if source is None:
+            source = "optimum"
+        
+        # weatherparams = [
+        #     "clouds",
+        #     "radiation",
+        #     "temp",
+        #     "winddeg",
+        #     "windspeed",
+        #     "windspeed_100m",
+        #     "pressure",
+        #     "humidity",
+        #     "rain",
+        #     "mxlD",
+        #     "snowDepth",
+        #     "clearSky_ulf",
+        #     "clearSky_dlf",
+        #     "ssrunoff",
+        # ]
+            
         weather_data = Weather().get_weather_data(
-            location,
-            weather_params,
-            datetime_start,
-            datetime_end,
-            source="optimum",
+            location=location,
+            weatherparams=weatherparams,
+            datetime_start=datetime_start,
+            datetime_end=datetime_end,
+            source=source,
+            resolution=resolution,
             country=country,
+            number_locations=number_locations,
+            forecasting_horizon=forecasting_horizon,
         )
-
         # Post process weather data
         # This might not be required anymore?
         if "source_1" in list(weather_data):
@@ -283,10 +327,4 @@ class Predictor:
             del weather_data["input_city_1"]
         elif "input_city" in list(weather_data):
             del weather_data["input_city"]
-
-        if forecast_resolution and weather_data.empty is False:
-            weather_data = weather_data.resample(forecast_resolution).interpolate(
-                limit=11
-            )  # 11 as GFS data has data every 3 hours
-
         return weather_data
