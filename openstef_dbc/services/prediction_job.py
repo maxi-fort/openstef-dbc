@@ -55,6 +55,12 @@ class PredictionJobRetriever:
         
         # Add model specs
         prediction_job_dict = self._add_modelspecs_to_prediction_job(prediction_job_dict)
+        
+        # Add country 
+        prediction_job_dict = self._add_country_to_prediction_job(prediction_job_dict)
+
+        # Add number of locations
+        prediction_job_dict = self._add_number_locations_to_prediction_job(prediction_job_dict)
 
         prediction_job = self._create_prediction_job_object(prediction_job_dict)
         return prediction_job
@@ -88,6 +94,8 @@ class PredictionJobRetriever:
         prediction_jobs = self._get_prediction_jobs_query_results(query)
         prediction_jobs = self._add_quantiles_to_prediction_jobs(prediction_jobs)
         prediction_jobs = self._add_modelspecs_to_prediction_jobs(prediction_jobs)
+        prediction_jobs = self._add_country_to_prediction_jobs(prediction_jobs)
+        prediction_jobs = self._add_number_locations_to_prediction_jobs(prediction_jobs)
         return prediction_jobs
 
     def get_prediction_jobs_wind(self):
@@ -207,6 +215,16 @@ class PredictionJobRetriever:
         self, prediction_job: PredictionJobDataClass
     ) -> PredictionJobDataClass:
         return self._add_modelspecs_to_prediction_jobs([prediction_job])[0]
+    
+    def _add_country_to_prediction_job(
+        self, prediction_job: PredictionJobDataClass
+    ) -> PredictionJobDataClass:
+        return self._add_country_to_prediction_jobs([prediction_job])[0]
+    
+    def _add_number_locations_to_prediction_job(
+        self, prediction_job: PredictionJobDataClass
+    ) -> PredictionJobDataClass:
+        return self._add_number_locations_to_prediction_jobs([prediction_job])[0]
 
     def get_pids_for_api_key(self, api_key: str) -> list[int]:
         """Get all pids that belong to a given API key.
@@ -379,7 +397,48 @@ class PredictionJobRetriever:
             # add empty list if none (this should not actually happen)
             prediction_job["default_modelspecs"] = []
         return prediction_jobs    
-            
+    
+    @classmethod
+    def _add_country_to_prediction_jobs(
+        cls, prediction_jobs: List[PredictionJobDataClass]
+    ) -> List[PredictionJobDataClass]:
+        prediction_job_ids = [pj["id"] for pj in prediction_jobs]
+        prediction_jobs_ids_str = ", ".join([f"{p}" for p in prediction_job_ids])
+
+        query = f"""
+            SELECT id, country 
+            FROM predictions
+            WHERE
+                id IN  ({prediction_jobs_ids_str})
+            ;
+        """
+        result = _DataInterface.get_instance().exec_sql_query(query)
+        # add model_specs to prediction job
+        for prediction_job, id in zip(prediction_jobs, prediction_job_ids):
+            prediction_job['country'] = result[result.id == id]['country'][0]
+        return prediction_jobs
+    
+    @classmethod
+    def _add_number_locations_to_prediction_jobs(
+        cls, prediction_jobs: List[PredictionJobDataClass]
+    ) -> List[PredictionJobDataClass]:
+        prediction_job_ids = [pj["id"] for pj in prediction_jobs]
+        prediction_jobs_ids_str = ", ".join([f"{p}" for p in prediction_job_ids])
+
+        query = f"""
+            SELECT id, number_locations 
+            FROM predictions
+            WHERE
+                id IN  ({prediction_jobs_ids_str})
+            ;
+        """
+        result = _DataInterface.get_instance().exec_sql_query(query)
+        # add model_specs to prediction job
+        for prediction_job, id in zip(prediction_jobs, prediction_job_ids):
+            prediction_job['number_locations'] = \
+                result[result.id == id]['number_locations'][0]
+        return prediction_jobs 
+        
     @classmethod
     def build_get_prediction_jobs_query(
         cls,
