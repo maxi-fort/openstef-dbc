@@ -32,7 +32,7 @@ class Predictor:
         location: Union[str, Tuple[float, float]] = None,
         predictor_groups: Union[List[PredictorGroups], List[str], None] = None,
         country: str = "NL",
-        number_locations: int = 1,
+        number_locations: int = 4,
         forecasting_horizon: List[float] = None,
     ) -> pd.DataFrame:
         """Get predictors.
